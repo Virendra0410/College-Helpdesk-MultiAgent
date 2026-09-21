@@ -21,6 +21,8 @@ A multi-agent AI-powered college helpdesk that answers student questions about e
 - Streamlit web interface
 - College-specific PDF documents as the knowledge source
 
+URL - https://college-appdesk-multiagent-fymmz3w6vg98tvs7ybsfkv.streamlit.app/
+
 ## 🏗️ Architecture
 
 ```text
@@ -42,3 +44,6 @@ Router Agent
                  Pydantic Validation
                          ↓
                    Final Response
+
+
+
