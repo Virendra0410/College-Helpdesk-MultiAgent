@@ -1,0 +1,16 @@
+
+streamlit
+langchain
+langgraph
+langchain-openai
+langchain-chroma
+langchain-huggingface
+langchain-community
+langchain-text-splitters
+chromadb
+pypdf
+sentence-transformers
+transformers
+accelerate
+pydantic
+torch
