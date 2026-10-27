@@ -14,3 +14,5 @@ transformers
 accelerate
 pydantic
 torch
+langchain-google-genai
+python-dotenv

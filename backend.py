@@ -1,26 +1,32 @@
+"""
+College Helpdesk Multi-Agent Backend
+Powered by LangChain, LangGraph, ChromaDB, Hugging Face Embeddings,
+and Google Gemini Flash.
+"""
 
-from typing import TypedDict, Literal
-
-from langchain_core.documents import Document
-from langchain_chroma import Chroma
-from langgraph.graph import StateGraph, START, END
+import os
+import re
+import logging
+from typing import TypedDict, Literal, Optional, List, Tuple, Any
 
 from pydantic import BaseModel, Field
-
+from langchain_core.documents import Document
+from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langgraph.graph import StateGraph, START, END
 
+from llm import invoke_llm_with_fallback, get_api_key, clean_response_text
+
+logger = logging.getLogger(__name__)
+
+DOCUMENTS_PATH = "documents"
+CHROMA_PERSIST_DIR = "chroma_db"
 
 # --------------------------------------------------
-# Document Path
-# --------------------------------------------------
-
-documents_path = "documents"
-
-
-# --------------------------------------------------
-# Embeddings
+# EMBEDDINGS
 # --------------------------------------------------
 
 embeddings = HuggingFaceEmbeddings(
@@ -29,131 +35,10 @@ embeddings = HuggingFaceEmbeddings(
 
 
 # --------------------------------------------------
-# Load PDF Documents
+# STRUCTURED CORE COLLEGE DOCUMENTS
 # --------------------------------------------------
 
-fee_loader = PyPDFLoader(
-    f"{documents_path}/fee_structure.pdf"
-)
-
-calendar_loader = PyPDFLoader(
-    f"{documents_path}/academic_calendar.pdf"
-)
-
-handbook_loader = PyPDFLoader(
-    f"{documents_path}/student_handbook.pdf"
-)
-
-admission_loader = PyPDFLoader(
-    f"{documents_path}/admission_rules.pdf"
-)
-
-exam_loader = PyPDFLoader(
-    f"{documents_path}/exam_malpractice_guidelines.pdf"
-)
-
-
-fee_docs = fee_loader.load()
-calendar_docs = calendar_loader.load()
-handbook_docs = handbook_loader.load()
-admission_docs = admission_loader.load()
-exam_docs = exam_loader.load()
-
-
-# --------------------------------------------------
-# Text Splitting
-# --------------------------------------------------
-
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=800,
-    chunk_overlap=100
-)
-
-fee_chunks = text_splitter.split_documents(fee_docs)
-calendar_chunks = text_splitter.split_documents(calendar_docs)
-handbook_chunks = text_splitter.split_documents(handbook_docs)
-admission_chunks = text_splitter.split_documents(admission_docs)
-exam_chunks = text_splitter.split_documents(exam_docs)
-
-
-print("Documents loaded successfully.")
-
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-
-# --------------------------------------------------
-# Document Path
-# --------------------------------------------------
-
-documents_path = "documents"
-
-
-# --------------------------------------------------
-# Embeddings
-# --------------------------------------------------
-
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
-
-
-# --------------------------------------------------
-# Load PDF Documents
-# --------------------------------------------------
-
-fee_loader = PyPDFLoader(
-    f"{documents_path}/fee_structure.pdf"
-)
-
-calendar_loader = PyPDFLoader(
-    f"{documents_path}/academic_calendar.pdf"
-)
-
-handbook_loader = PyPDFLoader(
-    f"{documents_path}/student_handbook.pdf"
-)
-
-admission_loader = PyPDFLoader(
-    f"{documents_path}/admission_rules.pdf"
-)
-
-exam_loader = PyPDFLoader(
-    f"{documents_path}/exam_malpractice_guidelines.pdf"
-)
-
-
-fee_docs = fee_loader.load()
-calendar_docs = calendar_loader.load()
-handbook_docs = handbook_loader.load()
-admission_docs = admission_loader.load()
-exam_docs = exam_loader.load()
-
-
-# --------------------------------------------------
-# Text Splitting
-# --------------------------------------------------
-
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=800,
-    chunk_overlap=100
-)
-
-fee_chunks = text_splitter.split_documents(fee_docs)
-calendar_chunks = text_splitter.split_documents(calendar_docs)
-handbook_chunks = text_splitter.split_documents(handbook_docs)
-admission_chunks = text_splitter.split_documents(admission_docs)
-exam_chunks = text_splitter.split_documents(exam_docs)
-
-
-print("Documents loaded successfully.")
-
-# --------------------------------------------------
-# STRUCTURED EXAM DOCUMENTS
-# --------------------------------------------------
-
-structured_documents = [
+structured_exam_documents = [
     Document(
         page_content="""
 ITEM 11 — IMPERSONATION IN THE EXAMINATION
@@ -162,13 +47,9 @@ Nature of malpractice:
 Impersonation in the examination (for both the students).
 
 Punishment:
-The concerned students shall be awarded 'F' grade in all subjects
-credited in the corresponding semester.
-
+The concerned students shall be awarded 'F' grade in all subjects credited in the corresponding semester.
 AND
-
-The concerned students shall be debarred from attending classes
-and appearing for examinations in the next two subsequent semesters.
+The concerned students shall be debarred from attending classes and appearing for examinations in the next two subsequent semesters.
 """,
         metadata={
             "source": "exam_malpractice_guidelines.pdf",
@@ -176,7 +57,6 @@ and appearing for examinations in the next two subsequent semesters.
             "category": "examination malpractice"
         }
     ),
-
     Document(
         page_content="""
 ITEM 12 — MALPRACTICE DURING REX/SAY/SUPPLEMENTARY EXAMINATIONS
@@ -186,15 +66,9 @@ Students engaged in malpractice during REX/SAY/Supplementary examinations.
 
 Punishment:
 The concerned student(s) shall be awarded 'F' grade in the corresponding course.
-
-In addition, the student(s) shall be awarded one grade less for all the
-other theory courses registered in the corresponding REX/SAY/Supplementary
-examinations.
-
+In addition, the student(s) shall be awarded one grade less for all the other theory courses registered in the corresponding REX/SAY/Supplementary examinations.
 AND
-
-The student(s) shall be debarred from the provision of any
-REX/SAY/Supplementary examinations in future.
+The student(s) shall be debarred from the provision of any REX/SAY/Supplementary examinations in future.
 """,
         metadata={
             "source": "exam_malpractice_guidelines.pdf",
@@ -202,7 +76,6 @@ REX/SAY/Supplementary examinations in future.
             "category": "examination malpractice"
         }
     ),
-
     Document(
         page_content="""
 ITEM 13 — ANY OTHER CASE NOT MENTIONED ABOVE
@@ -211,8 +84,7 @@ Nature of malpractice:
 Any other case not mentioned above.
 
 Punishment:
-Punishment will be as recommended by the Department level committee
-for malpractice enquiry or Institute level committee for malpractice enquiry.
+Punishment will be as recommended by the Department level committee for malpractice enquiry or Institute level committee for malpractice enquiry.
 """,
         metadata={
             "source": "exam_malpractice_guidelines.pdf",
@@ -222,24 +94,17 @@ for malpractice enquiry or Institute level committee for malpractice enquiry.
     )
 ]
 
-
-# --------------------------------------------------
-# STRUCTURED FEE DOCUMENT
-# --------------------------------------------------
-
 structured_fee_documents = [
     Document(
         page_content="""
 NIT CALICUT — ACADEMIC FEES FOR 2026-27 ADMISSION BATCH
 
 Programme: M.Tech / M.Plan
-
 Category:
 1. Students admitted through CCMT
 2. All students admitted through QIP
 
 Semester-wise fees:
-
 Tuition Fee:
 - Monsoon Semester 2026-27: ₹35,000
 - Winter Semester 2026-27: ₹35,000
@@ -261,15 +126,33 @@ Tuition fee is exempted for SC/ST students.
         metadata={
             "source": "fee_structure.pdf",
             "category": "M.Tech/M.Plan",
+            "programme": "M.Tech / M.Plan",
+            "fee_type": "academic fees"
+        }
+    ),
+    Document(
+        page_content="""
+NIT CALICUT — ACADEMIC FEES FOR 2026-27 ADMISSION BATCH
+
+Programme: M.Sc.
+Category: Students admitted through CCMN
+Tuition Fee: ₹7,500 per semester (Monsoon and Winter semesters).
+
+Programme: MBA (Regular - CAT)
+Tuition Fee: ₹75,000 per semester.
+
+Programme: Ph.D. (Full Time)
+Tuition Fee: ₹7,500 per semester.
+
+NOTE: This fee structure document does not contain undergraduate (B.Tech / B.Arch) fee structures.
+""",
+        metadata={
+            "source": "fee_structure.pdf",
+            "category": "Other PG Programmes",
             "fee_type": "academic fees"
         }
     )
 ]
-
-
-# --------------------------------------------------
-# STRUCTURED CALENDAR DOCUMENT
-# --------------------------------------------------
 
 structured_calendar_documents = [
     Document(
@@ -277,30 +160,14 @@ structured_calendar_documents = [
 NIT CALICUT — ACADEMIC CALENDAR FOR MONSOON SEMESTER 2026-27
 
 Important dates:
-
-1. Registration to Monsoon 2026 and Fee Payment without fine:
-   01.07.2026 to 17.07.2026
-
-2. Monsoon 2026 Enrolment Day (Mandatory Physical Reporting):
-   20.07.2026
-
-3. First Instructional Day:
-   21.07.2026
-
-4. Late Registration:
-   30.07.2026
-
-5. Last Date for Add/Drop Courses:
-   30.07.2026
-
-6. Institute Foundation Day:
-   01.09.2026
-
-7. Last Instructional Day:
-   10.11.2026
-
-8. Result Declaration:
-   10.12.2026
+1. Registration to Monsoon 2026 and Fee Payment without fine: 01.07.2026 to 17.07.2026
+2. Monsoon 2026 Enrolment Day (Mandatory Physical Reporting): 20.07.2026
+3. First Instructional Day: 21.07.2026
+4. Late Registration: 30.07.2026
+5. Last Date for Add/Drop Courses: 30.07.2026
+6. Institute Foundation Day: 01.09.2026
+7. Last Instructional Day: 10.11.2026
+8. Result Declaration: 10.12.2026
 """,
         metadata={
             "source": "academic_calendar.pdf",
@@ -310,47 +177,32 @@ Important dates:
     )
 ]
 
-
-print("Structured documents added.")
-
-# --------------------------------------------------
-# STRUCTURED ADMISSION DOCUMENT
-# --------------------------------------------------
-
 structured_admission_documents = [
     Document(
         page_content="""
 NIT CALICUT — PHYSICAL REPORTING AND ADMISSION INFORMATION
 Academic Year 2026-27
 
-Applicable to candidates who got final seat allotment through CCMT/CCMN
-for M.Tech./M.Plan/M.Sc. programmes.
+Applicable to candidates who got final seat allotment through CCMT/CCMN for M.Tech./M.Plan/M.Sc. programmes.
 
 Physical Reporting Venue:
 Bhaskara Hall, NIT Calicut.
 
 Physical Reporting Schedule:
-
-1. Department of Architecture & Planning
-   Department of Civil Engineering
+1. Department of Architecture & Planning and Department of Civil Engineering:
    Date: 05 August 2026
    Time: 9:30 am
-
-2. Department of Computer Science & Engineering
-   Department of Electronics & Communication Engineering
+2. Department of Computer Science & Engineering and Department of Electronics & Communication Engineering:
    Date: 06 August 2026
    Time: 9:30 am
 
-Documents to be Produced at the Time of Physical Reporting:
-
-Candidates are required to bring the following documents in original.
-
-Proof of Date of Birth:
-Class X marksheet/certificate issued by the school last attended
-or recognized educational board containing the date of birth of the applicant.
-
-The admission document contains additional documents required during
-physical reporting.
+Documents to be Produced in Original at the Time of Physical Reporting:
+- Proof of Date of Birth: Class X marksheet/certificate issued by the school last attended or recognized educational board containing date of birth.
+- Provisional Seat Allotment letter.
+- Qualifying degree marksheets and degree/provisional certificate.
+- Photo identity proof (Aadhaar, Passport, etc.).
+- Category certificate (SC/ST/OBC-NCL/GEN-EWS/PwD), if applicable.
+- Transfer certificate and Conduct/Character certificate from the institution last attended.
 """,
         metadata={
             "source": "admission_rules.pdf",
@@ -360,44 +212,23 @@ physical reporting.
     )
 ]
 
-
-# --------------------------------------------------
-# STRUCTURED ATTENDANCE DOCUMENT
-# --------------------------------------------------
-
 structured_attendance_documents = [
     Document(
         page_content="""
 NIT CALICUT — ATTENDANCE RULES
 
 Attendance Requirement:
-
-Students whose attendance is less than 80% or the limit prescribed
-by the course faculty for any course registered in a semester shall
-be informed of the shortage of attendance on or before the last
-instructional day.
+Students whose attendance is less than 80% or the limit prescribed by the course faculty for any course registered in a semester shall be informed of the shortage of attendance on or before the last instructional day.
 
 Attendance Shortage and Condonation:
-
-Students with attendance less than 80% or the limit prescribed by
-the course faculty for any course registered in a semester may be
-eligible to get their shortage of attendance condoned and hence
-appear for the end semester examination for that course only if
-they apply for condonation and satisfy the prescribed conditions.
+Students with attendance less than 80% or the limit prescribed by the course faculty for any course registered in a semester may be eligible to get their shortage of attendance condoned and hence appear for the end semester examination for that course only if they apply for condonation and satisfy the prescribed conditions.
 
 One stated condition is:
-
-The attendance in that semester for the course concerned, without
-applying any condonation, must not be less than 50% of the total
-classes handled for that course.
+The attendance in that semester for the course concerned, without applying any condonation, must not be less than 50% of the total classes handled for that course.
 
 Attendance Calculation:
-
-Attendance is counted from the date of commencement of the semester
-as per the academic calendar, except for first semester students.
-
-For first-semester students, attendance is counted from the date of
-admission to the Institute or the start of classes, whichever is later.
+Attendance is counted from the date of commencement of the semester as per the academic calendar, except for first semester students.
+For first-semester students, attendance is counted from the date of admission to the Institute or the start of classes, whichever is later.
 """,
         metadata={
             "source": "student_handbook.pdf",
@@ -407,425 +238,303 @@ admission to the Institute or the start of classes, whichever is later.
 ]
 
 
-print("Admission and attendance documents added.")
-
 # --------------------------------------------------
-# STRUCTURED VECTOR STORES
+# VECTOR STORE INITIALIZATION
 # --------------------------------------------------
 
-exam_vectorstore = Chroma.from_documents(
-    documents=structured_documents,
-    embedding=embeddings,
-    collection_name="college_helpdesk_final_exam"
-)
-
-exam_retriever = exam_vectorstore.as_retriever(
-    search_kwargs={"k": 1}
-)
-
-
-fee_vectorstore = Chroma.from_documents(
-    documents=structured_fee_documents,
-    embedding=embeddings,
-    collection_name="college_helpdesk_final_fees"
-)
-
-fee_retriever = fee_vectorstore.as_retriever(
-    search_kwargs={"k": 1}
-)
-
-
-calendar_vectorstore = Chroma.from_documents(
-    documents=structured_calendar_documents,
-    embedding=embeddings,
-    collection_name="college_helpdesk_final_calendar"
-)
-
-calendar_retriever = calendar_vectorstore.as_retriever(
-    search_kwargs={"k": 1}
-)
-
-
-admission_vectorstore = Chroma.from_documents(
-    documents=structured_admission_documents,
-    embedding=embeddings,
-    collection_name="college_helpdesk_final_admission"
-)
-
-admission_retriever = admission_vectorstore.as_retriever(
-    search_kwargs={"k": 1}
-)
-
-
-attendance_vectorstore = Chroma.from_documents(
-    documents=structured_attendance_documents,
-    embedding=embeddings,
-    collection_name="college_helpdesk_final_attendance"
-)
-
-attendance_retriever = attendance_vectorstore.as_retriever(
-    search_kwargs={"k": 1}
-)
-
-
-print("All structured vector stores created.")
-
-# --------------------------------------------------
-# EXAM ANSWER
-# --------------------------------------------------
-
-def get_exam_answer(question):
-    results = exam_retriever.invoke(question)
-
-    if not results:
-        return (
-            "I could not find this information in the available "
-            "examination guidelines."
+def load_pdf_chunks(filename: str, chunk_size: int = 800, chunk_overlap: int = 100) -> List[Document]:
+    path = os.path.join(DOCUMENTS_PATH, filename)
+    if not os.path.exists(path):
+        logger.warning("Document file %s not found.", path)
+        return []
+    try:
+        loader = PyPDFLoader(path)
+        docs = loader.load()
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap
         )
+        chunks = splitter.split_documents(docs)
+        for c in chunks:
+            c.metadata["source"] = filename
+        return chunks
+    except Exception as e:
+        logger.error("Failed to load PDF %s: %s", path, e)
+        return []
 
-    question_lower = question.lower()
 
-    # Item 11 — Impersonation
-    if "impersonation" in question_lower:
-        return (
-            "For impersonation in the examination, the concerned "
-            "students shall be awarded F grade in all subjects "
-            "credited in the corresponding semester. They shall also "
-            "be debarred from attending classes and appearing for "
-            "examinations in the next two subsequent semesters."
+def create_or_load_vectorstore(collection_name: str, documents: List[Document]) -> Chroma:
+    """
+    Creates or reloads a persistent Chroma vector store collection.
+    """
+    try:
+        vs = Chroma(
+            collection_name=collection_name,
+            embedding_function=embeddings,
+            persist_directory=CHROMA_PERSIST_DIR
         )
+        # Check if already populated
+        existing = vs.get()
+        if existing and existing.get("ids") and len(existing["ids"]) > 0:
+            return vs
+    except Exception:
+        pass
 
-    # Item 12 — REX/SAY/Supplementary malpractice
-    if any(word in question_lower for word in [
-        "rex",
-        "say",
-        "supplementary"
-    ]):
-        return (
-            "For malpractice during REX/SAY/Supplementary examinations, "
-            "the student shall be awarded F grade in the corresponding "
-            "course. The student shall also be awarded one grade less "
-            "for all other theory courses registered in the corresponding "
-            "REX/SAY/Supplementary examinations and shall be debarred "
-            "from future REX/SAY/Supplementary examinations."
-        )
+    # Create new collection from documents
+    return Chroma.from_documents(
+        documents=documents,
+        embedding=embeddings,
+        collection_name=collection_name,
+        persist_directory=CHROMA_PERSIST_DIR
+    )
 
-    # Item 13 — Other cases
-    if (
-        "other case" in question_lower
-        or "not mentioned" in question_lower
-        or "not listed" in question_lower
-    ):
-        return (
-            "For any other case not mentioned in the guidelines, the "
-            "punishment will be as recommended by the Department-level "
-            "committee for malpractice enquiry or Institute-level "
-            "committee for malpractice enquiry."
-        )
 
-    return results[0].page_content.strip()
+# Prepare combined document lists
+exam_all_docs = structured_exam_documents + load_pdf_chunks("exam_malpractice_guidelines.pdf")
+fee_all_docs = structured_fee_documents + load_pdf_chunks("fee_structure.pdf")
+calendar_all_docs = structured_calendar_documents + load_pdf_chunks("academic_calendar.pdf")
+admission_all_docs = structured_admission_documents + load_pdf_chunks("admission_rules.pdf")
+attendance_all_docs = structured_attendance_documents + load_pdf_chunks("student_handbook.pdf")
+
+# Create Vector Stores
+exam_vectorstore = create_or_load_vectorstore("college_helpdesk_final_exam", exam_all_docs)
+fee_vectorstore = create_or_load_vectorstore("college_helpdesk_final_fees", fee_all_docs)
+calendar_vectorstore = create_or_load_vectorstore("college_helpdesk_final_calendar", calendar_all_docs)
+admission_vectorstore = create_or_load_vectorstore("college_helpdesk_final_admission", admission_all_docs)
+attendance_vectorstore = create_or_load_vectorstore("college_helpdesk_final_attendance", attendance_all_docs)
+
+# Retrievers
+exam_retriever = exam_vectorstore.as_retriever(search_kwargs={"k": 3})
+fee_retriever = fee_vectorstore.as_retriever(search_kwargs={"k": 4})
+calendar_retriever = calendar_vectorstore.as_retriever(search_kwargs={"k": 3})
+admission_retriever = admission_vectorstore.as_retriever(search_kwargs={"k": 3})
+attendance_retriever = attendance_vectorstore.as_retriever(search_kwargs={"k": 3})
 
 
 # --------------------------------------------------
-# FEE ANSWER
+# CONTEXT & HISTORY FORMATTING HELPERS
 # --------------------------------------------------
 
-def get_fee_answer(question):
-    results = fee_retriever.invoke(question)
-
-    if not results:
-        return (
-            "I could not find this information in the available "
-            "college fee documents."
-        )
-
-    question_lower = question.lower()
-
-    if "tuition fee" in question_lower:
-        return (
-            "The tuition fee for M.Tech/M.Plan is "
-            "₹35,000 per listed semester."
-        )
-
-    return results[0].page_content.strip()
+def format_history(history: Optional[List[dict]], max_turns: int = 3) -> str:
+    if not history:
+        return ""
+    recent = history[-max_turns:]
+    lines = []
+    for turn in recent:
+        q = turn.get("question", "")
+        a = turn.get("answer", "")
+        if q and a:
+            lines.append(f"Student: {q}\nHelpdesk: {a}")
+    if not lines:
+        return ""
+    return "Recent Conversation History:\n" + "\n---\n".join(lines) + "\n\n"
 
 
-print("Exam and fee functions added.")
-
-# --------------------------------------------------
-# CALENDAR ANSWER
-# --------------------------------------------------
-
-def get_calendar_answer(question):
-    results = calendar_retriever.invoke(question)
-
-    if not results:
-        return (
-            "I could not find this information in the available "
-            "academic calendar."
-        )
-
-    question_lower = question.lower()
-
-    if "semester" in question_lower and (
-        "begin" in question_lower
-        or "start" in question_lower
-        or "commence" in question_lower
-    ):
-        return "The first instructional day is 21 July 2026."
-
-    if "last instructional day" in question_lower:
-        return "The last instructional day is 10 November 2026."
-
-    if "enrolment" in question_lower or "enrollment" in question_lower:
-        return (
-            "The Monsoon 2026 Enrolment Day "
-            "(Mandatory Physical Reporting) is 20 July 2026."
-        )
-
-    if "add/drop" in question_lower:
-        return "The last date for Add/Drop Courses is 30 July 2026."
-
-    if "late registration" in question_lower:
-        return "Late Registration is on 30 July 2026."
-
-    if "result" in question_lower:
-        return "The Result Declaration date is 10 December 2026."
-
-    return results[0].page_content.strip()
+def format_context_and_sources(docs: List[Document]) -> Tuple[str, List[str]]:
+    if not docs:
+        return "", []
+    context_blocks = []
+    sources = []
+    for idx, doc in enumerate(docs, 1):
+        src = doc.metadata.get("source", "college_document.pdf")
+        if src not in sources:
+            sources.append(src)
+        context_blocks.append(f"[Document {idx} - Source: {src}]\n{doc.page_content.strip()}")
+    return "\n\n".join(context_blocks), sources
 
 
 # --------------------------------------------------
-# ADMISSION ANSWER
+# LLM-POWERED ROUTER
 # --------------------------------------------------
 
-def get_admission_answer(question):
-    results = admission_retriever.invoke(question)
+ROUTER_SYSTEM_PROMPT = """You are an intelligent query router for the National Institute of Technology Calicut (NITC) Student Helpdesk.
+Classify the student's question into EXACTLY ONE of the following 5 categories:
 
-    if not results:
-        return (
-            "I could not find this information in the available "
-            "admission documents."
-        )
+1. exam: Examination rules, malpractice, punishments (e.g. impersonation, copying, debarment, F grade, REX/SAY/supplementary exams).
+2. fee: Tuition fees, semester fees, one-time fees, caution deposit, fee exemptions, payment deadlines.
+3. admission: Physical reporting venue, reporting dates, schedule by department, required documents/certificates for admission, CCMT/CCMN seat allotment.
+4. calendar: Academic calendar dates, semester start/first instructional day, enrolment day, Add/Drop deadline, late registration, last instructional day, result declaration.
+5. general: Attendance rules (80% requirement, shortage, condonation, attendance calculation), general student handbook policies, or queries not clearly matching the others.
 
-    question_lower = question.lower()
+Follow-up questions:
+If the question is a follow-up (e.g. "What about the winter semester?"), use the conversation history to identify the topic (e.g. fee or calendar).
 
-    if "venue" in question_lower or "where" in question_lower:
-        return (
-            "The physical reporting venue is "
-            "Bhaskara Hall, NIT Calicut."
-        )
-
-    if (
-        "computer science" in question_lower
-        or "electronics" in question_lower
-    ):
-        return (
-            "The Department of Computer Science & Engineering and "
-            "Department of Electronics & Communication Engineering "
-            "have physical reporting on 06 August 2026 at 9:30 am."
-        )
-
-    if (
-        "architecture" in question_lower
-        or "civil" in question_lower
-    ):
-        return (
-            "The Department of Architecture & Planning and "
-            "Department of Civil Engineering have physical reporting "
-            "on 05 August 2026 at 9:30 am."
-        )
-
-    if "document" in question_lower:
-        return (
-            "Candidates are required to bring the required documents "
-            "in original during physical reporting. The admission "
-            "document specifies proof of date of birth as a required "
-            "document."
-        )
-
-    return results[0].page_content.strip()
+Output ONLY the category name in lowercase: exam, fee, admission, calendar, or general. Do not add any explanation or punctuation."""
 
 
-print("Calendar and admission functions added.")
-
-# --------------------------------------------------
-# GENERAL / ATTENDANCE ANSWER
-# --------------------------------------------------
-
-def get_general_answer(question):
-    results = attendance_retriever.invoke(question)
-
-    if not results:
-        return (
-            "I could not find this information in the available "
-            "college documents."
-        )
-
-    question_lower = question.lower()
-
-    if (
-        "when" in question_lower
-        and (
-            "shortage" in question_lower
-            or "informed" in question_lower
-        )
-    ):
-        return (
-            "Students with attendance less than 80% or the limit "
-            "prescribed by the course faculty shall be informed of "
-            "the attendance shortage on or before the last "
-            "instructional day."
-        )
-
-    if (
-        "attendance requirement" in question_lower
-        or "minimum attendance" in question_lower
-        or "attendance required" in question_lower
-    ):
-        return (
-            "Students whose attendance is less than 80% or the limit "
-            "prescribed by the course faculty for a course shall be "
-            "informed of the shortage of attendance on or before the "
-            "last instructional day."
-        )
-
-    if (
-        "below 80" in question_lower
-        or "less than 80" in question_lower
-        or "condonation" in question_lower
-    ):
-        return (
-            "Students with attendance less than 80% or the limit "
-            "prescribed by the course faculty may be eligible to get "
-            "their shortage of attendance condoned and appear for "
-            "the end semester examination for that course, provided "
-            "they apply for condonation and satisfy the prescribed "
-            "conditions. One stated condition is that attendance "
-            "without condonation must not be less than 50% of the "
-            "total classes handled for that course."
-        )
-
-    if (
-        "attendance calculated" in question_lower
-        or "attendance counted" in question_lower
-        or "first semester" in question_lower
-    ):
-        return (
-            "Attendance is counted from the date of commencement "
-            "of the semester as per the academic calendar, except "
-            "for first-semester students. For first-semester "
-            "students, attendance is counted from the date of "
-            "admission to the Institute or the start of classes, "
-            "whichever is later."
-        )
-
-    return results[0].page_content.strip()
+def fallback_keyword_router(question: str) -> str:
+    q = question.lower()
+    if any(w in q for w in ["exam", "examination", "malpractice", "impersonation", "copying", "cheating", "rex", "say", "supplementary"]):
+        return "exam"
+    if any(w in q for w in ["fee", "fees", "tuition", "cost", "charges", "deposit", "payment", "amount"]):
+        return "fee"
+    if any(w in q for w in ["admission", "admissions", "reporting", "venue", "documents", "document", "certificate", "seat allotment", "physical reporting"]):
+        return "admission"
+    if any(w in q for w in ["semester", "instructional day", "calendar", "enrolment", "enrollment", "add/drop", "add drop", "registration date", "result declaration", "commence", "begin"]):
+        return "calendar"
+    return "general"
 
 
-print("General/attendance function added.")
+def router_node(state: dict) -> dict:
+    question = state["question"]
+    history_str = format_history(state.get("history", []))
 
-# --------------------------------------------------
-# ROUTER
-# --------------------------------------------------
+    user_content = f"{history_str}Current Student Question: {question}"
 
-def router_node(state):
-    question = state["question"].lower()
+    category = "general"
+    try:
+        response = invoke_llm_with_fallback([
+            SystemMessage(content=ROUTER_SYSTEM_PROMPT),
+            HumanMessage(content=user_content)
+        ], temperature=0.0)
 
-    if any(word in question for word in [
-        "exam",
-        "examination",
-        "malpractice",
-        "impersonation",
-        "copying"
-    ]):
-        category = "exam"
-
-    elif any(word in question for word in [
-        "fee",
-        "fees",
-        "payment",
-        "tuition",
-        "cost",
-        "charges"
-    ]):
-        category = "fee"
-
-    elif any(word in question for word in [
-        "admission",
-        "admissions",
-        "apply",
-        "application",
-        "reporting",
-        "documents",
-        "document",
-        "venue",
-        "physical reporting",
-        "seat allotment"
-    ]):
-        category = "admission"
-
-    elif any(word in question for word in [
-        "semester",
-        "instructional day",
-        "academic calendar",
-        "enrolment",
-        "enrollment",
-        "add/drop",
-        "registration date",
-        "last instructional day",
-        "first instructional day"
-    ]):
-        category = "calendar"
-
-    else:
-        category = "general"
+        cleaned = response.strip().lower()
+        # Look for category in response
+        for cat in ["exam", "fee", "admission", "calendar", "general"]:
+            if cat in cleaned:
+                category = cat
+                break
+    except Exception as e:
+        logger.warning("LLM router failed (%s). Falling back to keyword router.", e)
+        category = fallback_keyword_router(question)
 
     return {"category": category}
 
 
-def route_question(state):
-    return state["category"]
+def route_question(state: dict) -> str:
+    return state.get("category", "general")
+
+
+# --------------------------------------------------
+# SPECIALIZED AGENT GENERATION HELPER
+# --------------------------------------------------
+
+def generate_agent_response(
+    agent_name: str,
+    system_instructions: str,
+    retriever: Any,
+    state: dict
+) -> dict:
+    question = state["question"]
+    history = state.get("history", [])
+
+    # Retrieve relevant document chunks
+    try:
+        retrieved_docs = retriever.invoke(question)
+    except Exception as e:
+        logger.error("%s retriever failed: %s", agent_name, e)
+        retrieved_docs = []
+
+    context_str, sources = format_context_and_sources(retrieved_docs)
+    history_str = format_history(history)
+
+    user_prompt = f"""{history_str}Retrieved College Document Context:
+{context_str if context_str else "No documents found."}
+
+Student Question: {question}
+
+Provide a concise, grounded, and factual answer based strictly on the retrieved college documents."""
+
+    try:
+        answer = invoke_llm_with_fallback([
+            SystemMessage(content=system_instructions),
+            HumanMessage(content=user_prompt)
+        ], temperature=0.0)
+    except Exception as e:
+        logger.error("%s LLM invocation failed: %s", agent_name, e)
+        # Resilient fallback if API call fails
+        if not retrieved_docs:
+            answer = "I could not find information regarding this question in the available college documents."
+        else:
+            answer = (
+                f"Information from {', '.join(sources)}:\n\n"
+                f"{retrieved_docs[0].page_content.strip()}"
+            )
+
+    return {
+        "answer": answer.strip(),
+        "sources": sources
+    }
 
 
 # --------------------------------------------------
 # SPECIALIZED AGENTS
 # --------------------------------------------------
 
-def exam_agent(state):
-    return {
-        "answer": get_exam_answer(state["question"])
-    }
+EXAM_SYSTEM_PROMPT = """You are the Examination and Malpractice Guidelines Agent for National Institute of Technology Calicut.
+Your role is to give factual, accurate, and concise answers to student questions based strictly on the retrieved college examination guidelines.
+
+Strict Grounding Rules:
+1. Answer ONLY using information supported by the retrieved document context.
+2. For examination malpractice cases (e.g. impersonation, copying, REX/SAY/supplementary exams), state the exact prescribed punishments from the guidelines.
+3. If the user asks about an examination policy or situation not covered in the retrieved documents, clearly state that the information was not found in the examination guidelines.
+4. Do not invent penalties, procedures, or grades."""
 
 
-def fee_agent(state):
-    return {
-        "answer": get_fee_answer(state["question"])
-    }
+def exam_agent(state: dict) -> dict:
+    return generate_agent_response("Exam Agent", EXAM_SYSTEM_PROMPT, exam_retriever, state)
 
 
-def admission_agent(state):
-    return {
-        "answer": get_admission_answer(state["question"])
-    }
+FEE_SYSTEM_PROMPT = """You are the Academic Fee Structure Agent for National Institute of Technology Calicut.
+Your role is to give factual, accurate, and concise answers to student fee questions based strictly on the retrieved fee documents.
+
+CRITICAL Anti-Hallucination and Grounding Rules:
+1. Answer ONLY using information directly supported by the retrieved college documents.
+2. If the user asks about a programme (e.g., B.Tech, B.Arch), category, or semester that is NOT documented in the retrieved context, state clearly and unequivocally that fee information for that programme could not be found in the available college documents.
+3. NEVER substitute, assume, or infer the fee of one programme (such as M.Tech or M.Plan) for another programme (such as B.Tech).
+4. Preserve exact fee amounts, semester distinctions (e.g., Monsoon vs Winter), one-time fees, and exemption rules (e.g., tuition fee exemption for SC/ST students).
+5. If the evidence is ambiguous or absent, clearly state the limitation without guessing."""
 
 
-def calendar_agent(state):
-    return {
-        "answer": get_calendar_answer(state["question"])
-    }
+def fee_agent(state: dict) -> dict:
+    return generate_agent_response("Fee Agent", FEE_SYSTEM_PROMPT, fee_retriever, state)
 
 
-def general_agent(state):
-    return {
-        "answer": get_general_answer(state["question"])
-    }
+ADMISSION_SYSTEM_PROMPT = """You are the Admission and Physical Reporting Agent for National Institute of Technology Calicut.
+Your role is to give factual, accurate, and concise answers regarding physical reporting, admission schedules, reporting venue, and required documents.
+
+Strict Grounding Rules:
+1. Answer ONLY using information supported by the retrieved admission documents.
+2. Specify the exact physical reporting venue (Bhaskara Hall, NIT Calicut) and departmental reporting dates and times when asked.
+3. List the exact original documents required (such as Class X marksheet for proof of date of birth, provisional seat allotment letter, qualifying degree certificates, etc.).
+4. If the requested information is absent from the documents, state that it could not be found in the available admission documents."""
 
 
-print("Router and agents added.")
+def admission_agent(state: dict) -> dict:
+    return generate_agent_response("Admission Agent", ADMISSION_SYSTEM_PROMPT, admission_retriever, state)
+
+
+CALENDAR_SYSTEM_PROMPT = """You are the Academic Calendar Agent for National Institute of Technology Calicut.
+Your role is to give factual, accurate, and concise answers about semester dates, enrolment, Add/Drop deadlines, instructional days, and result declarations.
+
+Strict Grounding Rules:
+1. Answer ONLY using dates and details stated in the retrieved academic calendar.
+2. State the exact dates (e.g. First Instructional Day: 21 July 2026, Enrolment Day: 20 July 2026, Add/Drop Deadline: 30 July 2026, Last Instructional Day: 10 November 2026, Result Declaration: 10 December 2026).
+3. If an event or date is not listed in the calendar, state that it is not available in the academic calendar."""
+
+
+def calendar_agent(state: dict) -> dict:
+    return generate_agent_response("Calendar Agent", CALENDAR_SYSTEM_PROMPT, calendar_retriever, state)
+
+
+GENERAL_SYSTEM_PROMPT = """You are the General Help and Attendance Policy Agent for National Institute of Technology Calicut.
+Your role is to answer questions about attendance rules, condonation, attendance shortage, and student handbook policies based strictly on the retrieved documents.
+
+Strict Grounding Rules:
+1. Answer ONLY using information supported by the retrieved documents.
+2. State the exact attendance rules:
+   - Students with attendance below 80% (or the limit prescribed by faculty) are informed of attendance shortage on or before the last instructional day.
+   - Attendance shortage condonation requires that attendance without condonation is NOT less than 50% of total classes handled.
+   - Attendance calculation starts from the semester commencement date, or for first semester students, from the date of admission or start of classes, whichever is later.
+3. If the answer is not supported by the retrieved context, state clearly that the information could not be found in the college documents."""
+
+
+def general_agent(state: dict) -> dict:
+    return generate_agent_response("General Agent", GENERAL_SYSTEM_PROMPT, attendance_retriever, state)
+
 
 # --------------------------------------------------
-# STATE
+# STATE & HISTORY
 # --------------------------------------------------
 
 class HelpdeskState(TypedDict):
@@ -833,23 +542,18 @@ class HelpdeskState(TypedDict):
     category: str
     answer: str
     history: list
+    sources: list
 
 
-# --------------------------------------------------
-# CONVERSATION HISTORY
-# --------------------------------------------------
-
-def update_history(state):
-    history = state.get("history", [])
-
+def update_history(state: dict) -> dict:
+    history = state.get("history", []) or []
     history.append({
         "question": state["question"],
-        "answer": state["answer"]
+        "answer": state["answer"],
+        "category": state.get("category", "general"),
+        "sources": state.get("sources", [])
     })
-
-    return {
-        "history": history
-    }
+    return {"history": history}
 
 
 # --------------------------------------------------
@@ -864,13 +568,14 @@ class HelpdeskResponse(BaseModel):
         "calendar",
         "general"
     ]
-
     answer: str = Field(
-        description="The final answer given to the student."
+        description="The final grounded answer given to the student."
+    )
+    sources: List[str] = Field(
+        default_factory=list,
+        description="List of document filenames consulted."
     )
 
-
-print("State, memory, and Pydantic validation added.")
 
 # --------------------------------------------------
 # LANGGRAPH WORKFLOW
@@ -879,24 +584,17 @@ print("State, memory, and Pydantic validation added.")
 graph_builder = StateGraph(HelpdeskState)
 
 graph_builder.add_node("router", router_node)
-
 graph_builder.add_node("exam", exam_agent)
 graph_builder.add_node("fee", fee_agent)
 graph_builder.add_node("admission", admission_agent)
 graph_builder.add_node("calendar", calendar_agent)
 graph_builder.add_node("general", general_agent)
-
 graph_builder.add_node("update_history", update_history)
 
+# START -> router
+graph_builder.add_edge(START, "router")
 
-# Start → Router
-graph_builder.add_edge(
-    START,
-    "router"
-)
-
-
-# Router → Specialized Agent
+# Router -> Conditional Edge -> Specialized Agent
 graph_builder.add_conditional_edges(
     "router",
     route_question,
@@ -909,52 +607,29 @@ graph_builder.add_conditional_edges(
     }
 )
 
+# Agents -> update_history
+graph_builder.add_edge("exam", "update_history")
+graph_builder.add_edge("fee", "update_history")
+graph_builder.add_edge("admission", "update_history")
+graph_builder.add_edge("calendar", "update_history")
+graph_builder.add_edge("general", "update_history")
 
-# Specialized Agents → History
-graph_builder.add_edge(
-    "exam",
-    "update_history"
-)
-
-graph_builder.add_edge(
-    "fee",
-    "update_history"
-)
-
-graph_builder.add_edge(
-    "admission",
-    "update_history"
-)
-
-graph_builder.add_edge(
-    "calendar",
-    "update_history"
-)
-
-graph_builder.add_edge(
-    "general",
-    "update_history"
-)
-
-
-# History → End
-graph_builder.add_edge(
-    "update_history",
-    END
-)
-
+# update_history -> END
+graph_builder.add_edge("update_history", END)
 
 # Compile Graph
 graph = graph_builder.compile()
 
-print("LangGraph workflow created successfully.")
 
 # --------------------------------------------------
-# MAIN HELPDESK FUNCTION
+# MAIN HELPDESK ENTRY POINT
 # --------------------------------------------------
 
-def run_helpdesk(question, history=None):
-
+def run_helpdesk(question: str, history: Optional[list] = None) -> Tuple[HelpdeskResponse, list]:
+    """
+    Main entry point for College Helpdesk Multi-Agent RAG.
+    Executes LangGraph workflow and returns validated Pydantic response with updated history.
+    """
     if history is None:
         history = []
 
@@ -962,16 +637,23 @@ def run_helpdesk(question, history=None):
         "question": question,
         "category": "",
         "answer": "",
-        "history": history
+        "history": history,
+        "sources": []
     })
 
-    # Validate final response using Pydantic
-    validated_response = HelpdeskResponse(
-        category=result["category"],
-        answer=result["answer"]
-    )
+    # Validate response using Pydantic
+    try:
+        validated_response = HelpdeskResponse(
+            category=result["category"],
+            answer=result["answer"],
+            sources=result.get("sources", [])
+        )
+    except Exception as e:
+        logger.error("Pydantic validation error: %s. Using safe fallback.", e)
+        validated_response = HelpdeskResponse(
+            category="general",
+            answer=str(result.get("answer", "I encountered an issue processing your request.")),
+            sources=result.get("sources", [])
+        )
 
     return validated_response, result["history"]
-
-
-print("run_helpdesk function added.")
